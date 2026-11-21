@@ -12,13 +12,46 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+
+// Hand-in manifest helpers, authored for The Night Vault: once the copy and the dossier
+// write below are done, the entry verifies its own hand-in (every screenshot present and
+// non-empty, the dossier under the scorer's size cap) and prints a one-line summary of
+// what shipped. measureTree walks a directory recursively and totals its files and bytes.
+interface TreeStats {
+  files: number;
+  bytes: number;
+}
+
+function measureTree(dir: string): TreeStats {
+  let files = 0;
+  let bytes = 0;
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    const info = statSync(path);
+    if (info.isDirectory()) {
+      const inner = measureTree(path);
+      files += inner.files;
+      bytes += inner.bytes;
+    } else {
+      files += 1;
+      bytes += info.size;
+    }
+  }
+  return { files, bytes };
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+}
 
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
@@ -38,4 +71,30 @@ writeFileSync(
     game_max_bytes: 50331648,
     game_path_max_bytes: 1000,
   }),
+);
+
+// Verify the hand-in before calling it done: every screenshot beside this file must have
+// arrived in the output non-empty, and dossier.json must fit the scorer's 1.5 MiB cap.
+// Failing loudly here beats handing in a silently broken entry.
+const DOSSIER_CAP_BYTES = 1572864; // 1.5 MiB, the scorer's cap on dossier.json.
+const shotOutDir = join(out, 'screenshots');
+const sourceShotNames = existsSync(join(here, 'screenshots'))
+  ? readdirSync(join(here, 'screenshots')).sort()
+  : [];
+for (const name of sourceShotNames) {
+  const copied = join(shotOutDir, name);
+  if (!existsSync(copied) || statSync(copied).size === 0) {
+    throw new Error(`hand-in check failed: screenshot ${name} is missing or empty in the output`);
+  }
+}
+const dossierBytes = statSync(join(out, 'dossier.json')).size;
+if (dossierBytes > DOSSIER_CAP_BYTES) {
+  throw new Error(
+    `hand-in check failed: dossier.json is ${dossierBytes} bytes, over the ${DOSSIER_CAP_BYTES}-byte cap`,
+  );
+}
+const gameStats = measureTree(join(out, 'game'));
+console.log(
+  `The Night Vault handed in: ${gameStats.files} game files (${formatBytes(gameStats.bytes)}), ` +
+    `${sourceShotNames.length} screenshots, dossier.json ${formatBytes(dossierBytes)} — all checks passed.`,
 );
